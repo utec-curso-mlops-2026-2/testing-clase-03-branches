@@ -1,0 +1,122 @@
+# Clase 05 · Simulación · El robot guardián del modelo (solución completa)
+# También sirve como DEMO del Bloque 1 de la Clase 04.
+# Ruta en el repo: .github/workflows/model-ci-cd.yml
+#
+# Requisitos en GitHub (los configura el MLOps Lead):
+#   Settings → Secrets and variables → Actions
+#     Secrets:   DB_USER, DB_PASSWORD            Variables: AUC_MIN = 0.70
+#   Settings → Environments → produccion → Required reviewers: MLOps Lead
+#   Settings → Branches → reglas de main y develop → Require status checks: model-ci
+name: Model CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'requirements.txt'
+      - 'run_pipeline.py'
+      - '.github/workflows/**'
+  pull_request:                 # sin filtro de paths: un check obligatorio debe reportar en TODO PR
+    branches: [main, develop]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  model-ci:
+    runs-on: ubuntu-latest
+    outputs:
+      auc-test: ${{ steps.metricas.outputs.auc-test }}
+    steps:
+      - name: Traer el código
+        uses: actions/checkout@v6
+      - name: Instalar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Descargar datos
+        run: python src/0-download-data.py
+      - name: Separar train y test
+        run: python src/1-split-dataset.py
+      - name: Preprocesar train
+        run: python src/2-preprocess-dataset-train.py
+      - name: Preparar test
+        run: python src/3-prepare-dataset-test.py
+      - name: Entrenar y evaluar modelos
+        run: python src/4-train-evaluate-models.py
+      - name: Seleccionar mejor modelo
+        run: python src/5-select-best-model.py
+      - name: Publicar métricas
+        id: metricas
+        run: |
+          AUC=$(python -c "import pandas as pd; m=pd.read_csv('outputs/train/metrics/train_test_metrics.csv'); print(round(m.loc[m['sample']=='test','auc'].iloc[0], 4))")
+          echo "AUC test: $AUC"
+          echo "auc-test=$AUC" >> "$GITHUB_OUTPUT"
+      - name: Guardar el modelo como artefacto
+        uses: actions/upload-artifact@v7
+        with:
+          name: modelo-riesgo
+          path: |
+            outputs/preprocess/
+            outputs/train/metrics/
+            outputs/train/feature_importance.csv
+            outputs/train/models/best_model.pickle
+      - name: Quality gate (AUC mínimo)
+        env:
+          AUC_TEST: ${{ steps.metricas.outputs.auc-test }}
+          AUC_MIN: ${{ vars.AUC_MIN || '0.70' }}
+        run: |
+          echo "AUC test = $AUC_TEST | Umbral mínimo = $AUC_MIN"
+          python -c "assert $AUC_TEST >= $AUC_MIN, 'El AUC está por debajo del umbral: el modelo NO pasa'"
+          echo "El modelo supera el umbral"
+      - name: Resumen para humanos
+        if: always()
+        run: |
+          echo "### Reporte del robot guardián" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dato | Valor |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| AUC test | ${{ steps.metricas.outputs.auc-test }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Umbral | ${{ vars.AUC_MIN || '0.70' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Autor | @${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  model-cd:
+    needs: model-ci
+    if: github.event_name != 'pull_request' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    environment: produccion
+    steps:
+      - name: Descargar el modelo
+        uses: actions/download-artifact@v8
+        with:
+          name: modelo-riesgo
+      - name: Ver lo que llegó
+        run: ls -R
+      - name: Conectar a la base de datos
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: echo "Conectando a producción como $DB_USER con password $DB_PASSWORD"
+      - name: Desplegar modelo
+        run: |
+          echo "Desplegando modelo con AUC test = ${{ needs.model-ci.outputs.auc-test }} (simulado)"
+          echo "Versión: ${{ github.sha }} | Aprobado por el environment produccion"
+
+  reporte-error:
+    needs: [model-ci, model-cd]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Avisar qué pasó
+        env:
+          RAMA: ${{ github.head_ref || github.ref_name }}
+        run: |
+          echo "El robot guardián detuvo el pipeline"
+          echo "Evento: ${{ github.event_name }} | Rama: $RAMA"
+          echo "Autor: @${{ github.actor }} | Commit: ${{ github.sha }}"
+          echo "AUC test: ${{ needs.model-ci.outputs.auc-test }}"

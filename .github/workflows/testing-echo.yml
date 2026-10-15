@@ -1,0 +1,15 @@
+name: testing-echo
+on: workflow_dispatch
+jobs:
+  testing-job:
+    runs-on: ubuntu-latest
+    steps:
+      -name: test echo
+      -run: echo "AUC -> 0.73"
+  explorar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ¿Qué hay en la máquina?
+        run: ls -la
+      - name: Ejecutar un script del repo
+        run: python src/1-split-dataset.py
