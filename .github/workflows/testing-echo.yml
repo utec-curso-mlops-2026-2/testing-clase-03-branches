@@ -4,8 +4,8 @@ jobs:
   testing-job:
     runs-on: ubuntu-latest
     steps:
-      -name: test-echo
-      -run: echo "AUC -> 0.73"
+      - name: test-echo
+      - run: echo "AUC -> 0.73"
   explorar:
     runs-on: ubuntu-latest
     steps:
